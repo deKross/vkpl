@@ -1,0 +1,7 @@
+#!/usr/bin/bash
+if [[ ${!#} =~ ^[0-9]+$ ]]; then
+    args=(${@:1:$(($#-1))})
+    vkpl -s "${args[*]}" -N"${!#}" --add
+else
+    vkpl -s "${*}" --add
+fi

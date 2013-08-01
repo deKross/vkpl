@@ -1,0 +1,14 @@
+#!/usr/bin/bash
+if [ $# -lt 1 ]; then
+    vkpl -U > ~/vksongs
+    mpg123 -C@ ~/vksongs
+else
+    if [[ ${!#} =~ ^[0-9]+$ ]]; then
+        args=(${@:1:$(($#-1))})
+        vkpl -s "${args[*]}" -UN"${!#}" > ~/vksongs-temp
+        mpg123 -C@ ~/vksongs-temp
+    else
+        vkpl -s "${*}" -U > ~/vksongs-temp
+        mpg123 -C@ ~/vksongs-temp
+    fi
+fi

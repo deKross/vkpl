@@ -202,7 +202,6 @@ def main():
     parser.add_argument('--diff', action='store_true')
     parser.add_argument('-n', '--number', type=int)
     parser.add_argument('-N', '--get-number', type=int)
-    parser.add_argument('-r', '--randomize', action='store_true')
     parser.add_argument('-F', '--filter', action='append', default=[])
     parser.add_argument('--auth', action='store_true')
     parser.add_argument('--get-count', action='store_true')
@@ -274,14 +273,24 @@ def main():
     if not playlist:
         parser.exit(0)
 
-    FILTER_PREFIX = ''
     if len(arguments.filter):
+        FILTER_PREFIX = Config('filter_prefix') or ''
+        
+        def _clean(string):
+            l = len(FILTER_PREFIX + string)
+            i = l + 1 if fltr.startswith(('-', '_'), l) else l
+            return fltr[i:]
+
         for fltr in arguments.filter:
             if fltr == FILTER_PREFIX + 'reverse':
                 playlist.reverse()
+
+            elif fltr == FILTER_PREFIX + 'shuffle':
+                from random import shuffle
+                shuffle(playlist)
+
             elif fltr.startswith(FILTER_PREFIX + 'distinct'):
-                i = 9 if fltr.startswith(('-', '_'), 8) else 8
-                fltr = fltr[i:].split('-')
+                fltr = _clean('distinct').split('-')
                 filt = []
                 for i in fltr:
                     if i in playlist[0].keys():
@@ -295,18 +304,22 @@ def main():
                     for key in filt:
                         data.append(song[key].strip())
                     data = ' '.join(data)
-                    #print(data)
                     if data not in pool:
                         pool.add(data)
                         temp_playlist.append(song)
                 playlist = temp_playlist
+
             elif fltr.startswith(FILTER_PREFIX + 'sort'):
-                i = 5 if fltr.startswith(('-', '_'), 4) else 4
-                fltr = fltr[i:]
+                fltr = _clean('sort')
                 if fltr not in playlist[0].keys():
                     continue
                 data = [(song[fltr], song) for song in playlist]
                 playlist = [item[1] for item in sorted(data)]
+
+            elif fltr.startswith(FILTER_PREFIX + 'exclude'):
+                fltr = _clean('exclude')
+                playlist = [song for song in playlist if not re.search(fltr, "{artist} - {title}".format(**song), re.IGNORECASE) is not None]
+
             else:
                 try:
                     playlist = [playlist[i - 1] for i in parse_range(fltr)]
@@ -318,10 +331,6 @@ def main():
     if arguments.diff:
         downloaded = set(file for file in os.listdir(directory) if os.path.isfile(os.path.join(directory, file)))
         playlist = [song for song in playlist if "{artist} - {title}.mp3".format(**song) not in downloaded]
-
-    if arguments.randomize:
-        from random import shuffle
-        shuffle(playlist)
 
     if arguments.add:
         if arguments.aid and arguments.oid:
