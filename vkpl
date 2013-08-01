@@ -1,0 +1,357 @@
+#!/bin/env python3
+# -*- coding: utf-8 -*-
+
+import argparse
+import urllib.request, urllib.error, urllib.parse
+from html.parser import HTMLParser
+import os
+import sys
+import json
+import re
+import pylast
+
+
+APPLICATION_ID = 3002972
+API_KEY = 'ff05b81f1d53e407e71efa2813a88ff1'
+API_SECRET = '63423bf740fade9cd8ed80a6f947becf'
+VERSION_MAJOR = 0
+VERSION_MINOR = 0
+
+arguments = argparse.Namespace()
+
+class Config(object):
+    def __new__(cls, name=None, value=None):
+        if not hasattr(cls, '_instance'):
+            cls._instance = super(Config, cls).__new__(cls)
+            if name is not None:
+                cls._instance.__init__()
+        if name is not None:
+            return cls._instance(name, value)
+        return cls._instance
+
+    def __init__(self):
+        if os.name == 'posix':
+            try:
+                directory = os.environ['XDG_CONFIG_HOME']
+            except KeyError:
+                directory = os.path.join(os.environ['HOME'], '.config')
+        else:
+            directory = os.getcwd()
+        self.config_path = os.path.join(directory, "%s.conf" % arguments.prog)
+        self._defaults = {
+            'vkauth': '',
+            'user_id': '',
+            'downloader': ''
+        }
+        self._config = {}
+        self.load()
+
+    def __call__(self, name, value=None):
+        if value is None:
+            return self._config.get(name)
+        self._config[name] = value
+
+    def load(self):
+        self._config = dict(self._defaults)
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r') as config:
+                    self._config.update(json.loads(config.read()))
+            except Exception as e:
+                log("Can not read config file \"%s\"\n%s" % (self.config_path, e))
+            return
+        self.save()
+
+    def save(self):
+        try:
+            with open(self.config_path, 'w') as config:
+                config.write(json.dumps(self._config))
+        except:
+            log("Can not save config file \"%s\"" % self.config_path)
+
+
+class VKError(Exception):
+    pass
+
+
+class VK:
+    p = HTMLParser()
+    def __init__(self):
+        self.access_token = ''
+        self.expires_in = ''
+        self.user_id = ''
+
+    def parse_auth(self, string):
+        try:
+            string = string.split('=')
+            parse = lambda s: string[s][:string[s].find('&')]
+            self.access_token = parse(1)
+            self.expires_in = parse(2)
+            self.user_id = string[3]
+            self.is_app_user()
+            return True
+        except Exception as e:
+            log(e)
+            return False
+
+    def _get_response(self, url):
+        url = "https://api.vk.com/method/%s&access_token=%s" % (url, self.access_token)
+        log(url)
+        page = urllib.request.urlopen(url)
+        result = json.loads(VK.p.unescape(page.read().decode('utf-8')))
+        if 'error' in result:
+            raise VKError("-- Error: {error_code}\n{error_msg}".format(**result['error']))
+        else:
+            return result['response']
+
+    def _get_user(self, uid):
+        return uid if uid is not None else Config('user_id') if Config('user_id') > 0 else self.user_id
+
+    def _get_arg(self, arg, default=''):
+        return arg if arg is not None else default
+
+    def _ampersand(self, string):
+        return string.replace('&amp;', '&')
+
+    def is_app_user(self):
+        return self._get_response('isAppUser?uid=')
+
+    def get_count(self, uid=None):
+        url = "audio.getCount?oid=%s" % self._get_user(uid)
+        return self._get_response(url)
+
+    def add_song(self, song):
+        url = "audio.add?oid=%s&aid=%s" % (song['owner_id'], song['aid'])
+        return self._get_response(url)
+
+    def del_song(self, aid, uid=None):
+        url = "audio.delete?oid=%s&aid=%s" % (self._get_user(uid), self._get_arg(aid))
+        return self._get_response(url)
+
+    def search(self, q='', auto_complete=0, sort=0, lyrics=0, count=None, offset=None):
+        url = "audio.search?q=%s&auto_complete=%s&sort=%s&lyrics=%s&count=%s&offset=%s" % (self._get_arg(q), self._get_arg(auto_complete, 0), self._get_arg(sort, 0), self._get_arg(lyrics, 0), self._get_arg(count), self._get_arg(offset))
+        return self._get_response(url)[1:]
+
+    def get_albums(self, uid=None, offset=None, count=None):
+        url = "audio.getAlbums?uid=%s&offset=%s&count=%s" % (self._get_user(uid), self._get_arg(offset), self._get_arg(count))
+        response = self._get_response(url)
+        return [(album['title'], album['album_id']) for album in response[1:]] if response[0] > 0 else []
+
+    def get_playlist(self, uid=None, album=None, offset=None, count=None):
+        url = "audio.get?uid=%s&album_id=%s&offset=%s&count=%s" % (self._get_user(uid), self._get_arg(album), self._get_arg(offset), self._get_arg(count))
+        return self._get_response(url)
+
+
+def log(*args, **kwargs):
+    if arguments.verbose:
+        print(*args, **kwargs)
+
+
+def parse_range(data):
+    data = data.split()
+    normal_pool = set()
+    invert_pool = set()
+    for chunk in data:
+        try:
+            normal_pool.add(int(chunk))
+        except (ValueError, TypeError):
+            pool = normal_pool
+            if chunk.startswith('^'):
+                chunk = chunk[1:]
+                pool = invert_pool
+            try:
+                pool.add(int(chunk))
+            except (ValueError, TypeError):
+                chunks = chunk.split('-')
+                #if len(chunks) == 1:
+                    #raise ValueError("%s is not integer" % chunk)
+                #elif len(chunks) > 2:
+                    #raise ValueError("%s is invalid range" % chunk)
+                try:
+                    pool.update(range(int(chunks[0]), int(chunks[1]) + 1))
+                #except (ValueError, TypeError):
+                except:
+                    raise TypeError
+    return sorted(tuple(normal_pool - invert_pool))
+
+
+def check_connection():
+    #sources = ['173.194.113.146', '128.30.52.45', '87.240.131.117']
+    sources = ['http://www.google.com', 'www.w3c.org', 'www.vk.com']
+    for source in sources:
+        try:
+            urllib.request.urlopen(source, timeout=1)
+            return True
+        except urllib.error.URLError:
+            return False
+
+
+def main():
+    #import pdb; pdb.set_trace()
+    #return
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-I', '--input', type=argparse.FileType('r'), default=sys.stdin)
+    parser.add_argument('-O', '--output', type=argparse.FileType('w'), default=sys.stdout)
+    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('-V', '--version', action='version', version="%s %d.%d" % (parser.prog, VERSION_MAJOR, VERSION_MINOR))
+    parser.add_argument('-u', '--user', type=int)
+    parser.add_argument('-o', '--offset', type=int)
+    parser.add_argument('-c', '--count', type=int)
+    parser.add_argument('-U', '--only-urls', action='store_true')
+    parser.add_argument('-d', '--dir', default=os.getcwd())
+    parser.add_argument('--diff', action='store_true')
+    parser.add_argument('-n', '--number', type=int)
+    parser.add_argument('-N', '--get-number', type=int)
+    parser.add_argument('-r', '--randomize', action='store_true')
+    parser.add_argument('-F', '--filter', action='append', default=[])
+    parser.add_argument('--auth', action='store_true')
+    parser.add_argument('--get-count', action='store_true')
+    parser.add_argument('-s', '--search')
+    parser.add_argument('-f', '--format')
+    parser.add_argument('--aid')
+    parser.add_argument('--oid')
+    parser.add_argument('--artist')
+    parser.add_argument('--album')
+    parser.add_argument('--albums')
+    parser.add_argument('--similar')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--add', action='store_true')
+    group.add_argument('--delete', action='store_true')
+    parser.parse_args(namespace=arguments)
+    arguments.prog = parser.prog
+
+    if check_connection():
+        log('Internet connection established.')
+    else:
+        parser.exit(1, 'Internet connection not exists.')
+
+    vk = VK()
+
+    if arguments.auth or not vk.parse_auth(Config('vkauth')):
+        from webbrowser import open_new_tab
+        open_new_tab("http://api.vkontakte.ru/oauth/authorize?client_id=%s&scope=audio&redirect_uri=http://api.vk.com/blank.html&display=page&response_type=token" % APPLICATION_ID)
+        auth_string = input('Auth response: ')
+
+        if not vk.parse_auth(auth_string):
+            parser.exit(1, 'Can not authenticate to vk.com')
+
+        Config('vkauth', auth_string)
+
+    log('vk.com authtentication complete.')
+
+    lastfm = pylast.LastFMNetwork(api_key=API_KEY, api_secret=API_SECRET)
+
+    playlist = []
+
+    if arguments.artist:
+        lf_artist = lastfm.get_artist()
+        try:
+            lf_artist.is_streamable()
+        except pylast.WSError:
+            lf_artist = None
+
+        if lf_artist:
+            if not (arguments.album or arguments.albums):
+                for track in lf_artist.get_top_tracks():
+                    playlist.append('%s - %s' % (lf_artist.get_name(), track.item.get_title()))
+
+    if arguments.get_count:
+        arguments.output.write(str(vk.get_count(uid=arguments.user)))
+        parser.exit(0)
+
+    if arguments.get_number is not None:
+        arguments.offset = arguments.get_number
+        arguments.count = 1
+
+    try:
+        if arguments.search:
+            playlist = vk.search(q=urllib.parse.quote(arguments.search), count=arguments.count, offset=arguments.offset)
+        else:
+            playlist = vk.get_playlist(uid=arguments.user, offset=arguments.offset, count=arguments.count)
+    except (ValueError, VKError) as e:
+        parser.exit(1, "Can not fetch playlist.\n%s" % e)
+
+    if not playlist:
+        parser.exit(0)
+
+    FILTER_PREFIX = ''
+    if len(arguments.filter):
+        for fltr in arguments.filter:
+            if fltr == FILTER_PREFIX + 'reverse':
+                playlist.reverse()
+            elif fltr.startswith(FILTER_PREFIX + 'distinct'):
+                i = 9 if fltr.startswith(('-', '_'), 8) else 8
+                fltr = fltr[i:].split('-')
+                filt = []
+                for i in fltr:
+                    if i in playlist[0].keys():
+                        filt.append(i)
+                if not filt:
+                    continue
+                pool = set()
+                temp_playlist = []
+                for song in playlist:
+                    data = []
+                    for key in filt:
+                        data.append(song[key].strip())
+                    data = ' '.join(data)
+                    #print(data)
+                    if data not in pool:
+                        pool.add(data)
+                        temp_playlist.append(song)
+                playlist = temp_playlist
+            elif fltr.startswith(FILTER_PREFIX + 'sort'):
+                i = 5 if fltr.startswith(('-', '_'), 4) else 4
+                fltr = fltr[i:]
+                if fltr not in playlist[0].keys():
+                    continue
+                data = [(song[fltr], song) for song in playlist]
+                playlist = [item[1] for item in sorted(data)]
+            else:
+                try:
+                    playlist = [playlist[i - 1] for i in parse_range(fltr)]
+                except TypeError:
+                    playlist = [song for song in playlist if re.search(fltr, "{artist} - {title}".format(**song), re.IGNORECASE) is not None]
+
+    directory = os.path.normpath(os.path.expandvars(os.path.expanduser(arguments.dir)))
+    log("-- Directory: %s" % directory)
+    if arguments.diff:
+        downloaded = set(file for file in os.listdir(directory) if os.path.isfile(os.path.join(directory, file)))
+        playlist = [song for song in playlist if "{artist} - {title}.mp3".format(**song) not in downloaded]
+
+    if arguments.randomize:
+        from random import shuffle
+        shuffle(playlist)
+
+    if arguments.add:
+        if arguments.aid and arguments.oid:
+            aid = vk.add_song({'aid': arguments.aid, 'oid': arguments.oid})
+        else:
+            aid = vk.add_song(playlist[0])
+        arguments.output.write(str(aid) + '\n')
+        parser.exit(0)
+    elif arguments.delete:
+        vk.del_song(aid=arguments.aid or playlist[0]['aid'], uid=arguments.user)
+        parser.exit(0)
+
+    if arguments.only_urls:
+        format_string = '{url}'
+    else:
+        format_string = arguments.format or Config('format') or '{number}. {artist} - {title}'
+    number_width = len(str(len(playlist)))
+
+    for i in range(len(playlist)):
+        song = dict(playlist[i])
+        song.update({
+                'number': "{1: >{0}}".format(number_width, i),
+                'duration': "%02i:%02i" % (divmod(song['duration'], 60))})
+        output = format_string.format(**song)
+        arguments.output.write(output + '\n')
+
+    #Config().save()
+    with open(Config._instance.config_path, 'w') as config:
+        config.write(json.dumps(Config._instance._config))
+
+
+if __name__ == "__main__":
+    main()
